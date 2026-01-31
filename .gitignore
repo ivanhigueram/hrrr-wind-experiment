@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data cache
+hrrr_cache/
+data/*.tif
+data/*.nc
+
+# Output files (keep directory)
+output/*
+!output/.gitkeep
+
+# Logs
+logs/*
+!logs/.gitkeep
+
+# OS files
+.DS_Store
+
+# Container images
+*.sif
