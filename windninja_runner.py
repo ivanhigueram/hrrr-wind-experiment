@@ -11,12 +11,11 @@ Usage on HPC:
     3. Run WindNinja via Apptainer
 """
 
-import subprocess
-import json
-from pathlib import Path
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field
 import logging
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,6 +32,10 @@ class WindNinjaConfig:
     input_speed: float = 10.0
     input_speed_units: str = "mph"
     input_direction: float = 270.0
+    input_wind_height: float = (
+        10.0  # Height at which input wind is measured (typically 10m for HRRR)
+    )
+    units_input_wind_height: str = "m"
 
     wx_model_type: Optional[str] = None
     forecast_filename: Optional[Path] = None
@@ -54,9 +57,18 @@ class WindNinjaConfig:
     vegetation: str = "grass"
 
     def to_cli_args(self) -> List[str]:
-        """Convert config to WindNinja CLI arguments."""
+        """
+        Convert config to WindNinja CLI arguments.
+
+        Note: All file paths are converted to absolute paths to ensure
+        they work correctly inside containers regardless of working directory.
+        """
+        # Convert paths to absolute to avoid issues with container working directory
+        elevation_file_abs = Path(self.elevation_file).resolve()
+        output_path_abs = Path(self.output_path).resolve()
+
         args = [
-            f"--elevation_file={self.elevation_file}",
+            f"--elevation_file={elevation_file_abs}",
             f"--initialization_method={self.initialization_method}",
             f"--mesh_resolution={self.mesh_resolution}",
             f"--units_mesh_resolution={self.units_mesh_resolution}",
@@ -65,7 +77,7 @@ class WindNinjaConfig:
             f"--units_output_wind_height={self.units_output_wind_height}",
             f"--vegetation={self.vegetation}",
             f"--num_threads={self.num_threads}",
-            f"--output_path={self.output_path}",
+            f"--output_path={output_path_abs}",
         ]
 
         if self.initialization_method == "domainAverageInitialization":
@@ -74,13 +86,16 @@ class WindNinjaConfig:
                     f"--input_speed={self.input_speed}",
                     f"--input_speed_units={self.input_speed_units}",
                     f"--input_direction={self.input_direction}",
+                    f"--input_wind_height={self.input_wind_height}",
+                    f"--units_input_wind_height={self.units_input_wind_height}",
                 ]
             )
         elif self.initialization_method == "wxModelInitialization":
             if self.wx_model_type:
                 args.append(f"--wx_model_type={self.wx_model_type}")
             if self.forecast_filename:
-                args.append(f"--forecast_filename={self.forecast_filename}")
+                forecast_file_abs = Path(self.forecast_filename).resolve()
+                args.append(f"--forecast_filename={forecast_file_abs}")
 
         if self.write_goog_output:
             args.append("--write_goog_output=true")
@@ -141,8 +156,8 @@ class WindNinjaRunner:
                 logger.info(f"Using fallback: {result.stdout.strip()}")
             except FileNotFoundError:
                 logger.warning(
-                    f"Neither apptainer nor singularity found. "
-                    f"Container operations will fail until installed."
+                    "Neither apptainer nor singularity found. "
+                    "Container operations will fail until installed."
                 )
 
     def pull_container(self, output_path: Path) -> Path:
@@ -226,6 +241,7 @@ class WindNinjaRunner:
         self,
         config: WindNinjaConfig,
         bind_paths: Optional[List[str]] = None,
+        verbose: bool = False,
     ) -> Dict[str, Any]:
         """
         Run WindNinja with the given configuration.
@@ -236,6 +252,8 @@ class WindNinjaRunner:
             WindNinja run configuration
         bind_paths : list, optional
             Additional paths to bind into container
+        verbose : bool
+            If True, print all stdout/stderr to console during execution
 
         Returns
         -------
@@ -247,10 +265,18 @@ class WindNinjaRunner:
 
         config.output_path.mkdir(parents=True, exist_ok=True)
 
+        # Verify required files exist
+        if not config.elevation_file.exists():
+            raise RuntimeError(f"Elevation file not found: {config.elevation_file}")
+
         bind_dirs = set()
         bind_dirs.add(str(config.elevation_file.parent.resolve()))
         bind_dirs.add(str(config.output_path.resolve()))
         if config.forecast_filename:
+            if not config.forecast_filename.exists():
+                raise RuntimeError(
+                    f"Forecast file not found: {config.forecast_filename}"
+                )
             bind_dirs.add(str(config.forecast_filename.parent.resolve()))
         if bind_paths:
             bind_dirs.update(bind_paths)
@@ -267,19 +293,38 @@ class WindNinjaRunner:
         ] + config.to_cli_args()
 
         logger.info(f"Running WindNinja: {' '.join(cmd)}")
+        logger.info(f"Elevation file: {config.elevation_file}")
+        logger.info(f"Output directory: {config.output_path}")
+        logger.info(f"Binding directories: {bind_str}")
 
+        # Don't set cwd since we're using absolute paths now
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            cwd=str(config.output_path),
         )
 
-        if result.returncode != 0:
-            logger.error(f"WindNinja failed:\n{result.stderr}")
-            raise RuntimeError(f"WindNinja execution failed: {result.stderr}")
+        # Combine stdout and stderr for better error reporting
+        combined_output = result.stdout + result.stderr
 
-        logger.info(f"WindNinja completed successfully")
+        if verbose or result.returncode != 0:
+            print("\n" + "=" * 60)
+            print("STDOUT:")
+            print(result.stdout if result.stdout else "(empty)")
+            print("\nSTDERR:")
+            print(result.stderr if result.stderr else "(empty)")
+            print("=" * 60 + "\n")
+
+        if result.returncode != 0:
+            error_msg = (
+                f"WindNinja execution failed with return code {result.returncode}"
+            )
+            if combined_output:
+                error_msg += f"\n{combined_output}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        logger.info("WindNinja completed successfully")
         logger.debug(result.stdout)
 
         output_files = list(config.output_path.glob("*"))
@@ -289,6 +334,7 @@ class WindNinjaRunner:
             "output_path": config.output_path,
             "output_files": output_files,
             "stdout": result.stdout,
+            "stderr": result.stderr,
         }
 
     def run_with_hrrr(
@@ -333,6 +379,44 @@ class WindNinjaRunner:
         )
 
         return self.run(config)
+
+    def test_container(self) -> bool:
+        """
+        Test that the container is working and WindNinja_cli is available.
+
+        Returns
+        -------
+        bool
+            True if container works, False otherwise
+        """
+        if not self.container_path or not self.container_path.exists():
+            logger.error("Container file does not exist")
+            return False
+
+        cmd = [
+            self.container_cmd,
+            "exec",
+            str(self.container_path),
+            "WindNinja_cli",
+            "--help",
+        ]
+
+        logger.info(f"Testing container with: {' '.join(cmd)}")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            logger.error(
+                f"Container test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            )
+            return False
+
+        logger.info("Container test passed!")
+        return True
 
 
 def generate_slurm_script(

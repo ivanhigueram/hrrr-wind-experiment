@@ -11,10 +11,10 @@ This module handles:
 - Exporting to formats compatible with WindNinja
 """
 
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple, List
-import logging
+from typing import List, Optional, Tuple
 
 import numpy as np
 import xarray as xr
@@ -136,7 +136,22 @@ class HRRRWindFetcher:
 
         if bounds:
             west, south, east, north = bounds
-            ds = ds.sel(longitude=slice(west, east), latitude=slice(south, north))
+            # HRRR uses 0-360 longitude convention
+            if west < 0:
+                west = west + 360
+            if east < 0:
+                east = east + 360
+
+            if hasattr(ds, "longitude"):
+                mask = (
+                    (ds.longitude >= west)
+                    & (ds.longitude <= east)
+                    & (ds.latitude >= south)
+                    & (ds.latitude <= north)
+                )
+                y_idx = mask.any(dim="x").values
+                x_idx = mask.any(dim="y").values
+                ds = ds.isel(y=y_idx, x=x_idx)
 
         return ds
 
