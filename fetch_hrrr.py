@@ -12,11 +12,12 @@ This module handles:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 from herbie.core import Herbie
 from herbie.fast import FastHerbie
@@ -115,9 +116,7 @@ class HRRRWindFetcher:
         xr.Dataset
             Dataset with u, v, wind_speed at each pressure level
         """
-        logger.info(
-            f"Fetching HRRR pressure level winds for {date} F{forecast_hour:02d}"
-        )
+        logger.info(f"Fetching HRRR pressure level winds for {date} F{forecast_hour:02d}")
 
         H = Herbie(
             date,
@@ -163,7 +162,10 @@ class HRRRWindFetcher:
         hours_interval: int = 1,
     ) -> xr.Dataset:
         """
-        Fetch a time series of surface winds using FastHerbie for parallelization.
+        Fetch a hourly time series of surface winds using FastHerbie for parallelization.
+
+        Here we will pull a time-series of HRRR surface winds between start_date and end_date. We will use the analysis step per each hourly
+        prediction. This means that we will be pulling the 0-hour forecast for each hour in the time range.
 
         Parameters
         ----------
@@ -172,7 +174,7 @@ class HRRRWindFetcher:
         end_date : datetime
             End of time range
         bounds : tuple, optional
-            Bounding box
+            Bounding box (west, south, east, north)
         hours_interval : int
             Hours between fetches
 
@@ -181,40 +183,40 @@ class HRRRWindFetcher:
         xr.Dataset
             Concatenated dataset with time dimension
         """
-        dates = []
-        current = start_date
-        while current <= end_date:
-            dates.append(current)
-            current += timedelta(hours=hours_interval)
+
+        # Create time series
+        dates = pd.date_range(start=start_date, end=end_date, freq=f"{hours_interval}h")
 
         logger.info(f"Fetching {len(dates)} HRRR timestamps with FastHerbie")
 
-        FH = FastHerbie(
-            dates,
-            model="hrrr",
-            product="sfc",
-            fxx=0,
-        )
+        FH = FastHerbie(dates, model="hrrr", product="sfc", fxx=[0])
 
         ds = FH.xarray("(?:UGRD|VGRD):10 m above ground")
 
         if bounds:
             west, south, east, north = bounds
+            # HRRR uses 0-360 longitude convention
+            if west < 0:
+                west = west + 360
+            if east < 0:
+                east = east + 360
+
             if hasattr(ds, "longitude") and hasattr(ds, "latitude"):
                 mask = (
-                    (ds.longitude >= west)
-                    & (ds.longitude <= east)
-                    & (ds.latitude >= south)
-                    & (ds.latitude <= north)
+                    (ds.longitude >= west)  # type: ignore
+                    & (ds.longitude <= east)  # type: ignore
+                    & (ds.latitude >= south)  # type: ignore
+                    & (ds.latitude <= north)  # type: ignore
                 )
-                if ds.longitude.ndim == 2:
+                if ds.longitude.ndim == 2:  # type: ignore
+                    # For 2D lat/lon, find indices where mask is True in any dimension
                     y_idx = mask.any(dim="x").values
                     x_idx = mask.any(dim="y").values
-                    ds = ds.isel(y=y_idx, x=x_idx)
+                    ds = ds.isel(y=y_idx, x=x_idx)  # type: ignore
                 else:
-                    ds = ds.where(mask, drop=True)
+                    ds = ds.where(mask, drop=True)  # type: ignore
 
-        return ds
+        return ds  # type: ignore
 
     def to_windninja_ascii(
         self,
@@ -309,7 +311,7 @@ def example_california_fire_region():
     socal_bounds = (-121.0, 33.5, -116.0, 37.0)
 
     ds = fetcher.fetch_surface_winds(
-        date=datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+        date=datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         - timedelta(hours=2),
         forecast_hour=0,
         bounds=socal_bounds,
