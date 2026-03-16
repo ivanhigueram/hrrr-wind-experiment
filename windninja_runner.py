@@ -143,9 +143,7 @@ class WindNinjaRunner:
             )
             logger.info(f"Found: {result.stdout.strip()}")
         except FileNotFoundError:
-            alt_cmd = (
-                "singularity" if self.container_cmd == "apptainer" else "apptainer"
-            )
+            alt_cmd = "singularity" if self.container_cmd == "apptainer" else "apptainer"
             try:
                 result = subprocess.run(
                     [alt_cmd, "--version"],
@@ -274,9 +272,7 @@ class WindNinjaRunner:
         bind_dirs.add(str(config.output_path.resolve()))
         if config.forecast_filename:
             if not config.forecast_filename.exists():
-                raise RuntimeError(
-                    f"Forecast file not found: {config.forecast_filename}"
-                )
+                raise RuntimeError(f"Forecast file not found: {config.forecast_filename}")
             bind_dirs.add(str(config.forecast_filename.parent.resolve()))
         if bind_paths:
             bind_dirs.update(bind_paths)
@@ -316,9 +312,7 @@ class WindNinjaRunner:
             print("=" * 60 + "\n")
 
         if result.returncode != 0:
-            error_msg = (
-                f"WindNinja execution failed with return code {result.returncode}"
-            )
+            error_msg = f"WindNinja execution failed with return code {result.returncode}"
             if combined_output:
                 error_msg += f"\n{combined_output}"
             logger.error(error_msg)
